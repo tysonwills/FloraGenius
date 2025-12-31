@@ -46,6 +46,16 @@ export interface JournalEntry {
   imageUrl: string | null;
 }
 
+export interface PlantReminder {
+  id: string;
+  plantId: string;
+  plantName: string;
+  task: string;
+  frequencyDays: number;
+  lastCompleted: string;
+  nextDue: string;
+}
+
 export interface GroundingSource {
   title: string;
   uri: string;

@@ -1,10 +1,10 @@
 
-import React, { useState, useEffect } from 'react';
-import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Routes, Route, Link, useLocation, useNavigate, Navigate, useParams } from 'react-router-dom';
 import CameraCapture from './components/CameraCapture';
 import { identifyPlant, diagnosePlant, getNearbyGardenCenters, generatePlantImage, getLocalFlora } from './services/geminiService';
 import { authService } from './services/authService';
-import { PlantIdentification, PlantDiagnosis, GroundingSource, User, JournalEntry } from './types';
+import { PlantIdentification, PlantDiagnosis, GroundingSource, User, JournalEntry, PlantReminder } from './types';
 
 // Helper to compress base64 images to prevent localStorage quota issues
 const compressBase64 = async (base64: string, maxWidth = 400): Promise<string> => {
@@ -21,6 +21,402 @@ const compressBase64 = async (base64: string, maxWidth = 400): Promise<string> =
       resolve(canvas.toDataURL('image/jpeg', 0.7)); // Compress to JPEG 70%
     };
   });
+};
+
+const PLANT_TIPS = [
+  "Water your plants in the morning to allow foliage to dry before night, preventing fungal growth.",
+  "Check soil moisture by sticking your finger 2 inches deep. If it's dry, it's usually time to water.",
+  "Rotate your indoor plants 90 degrees every week to ensure even growth and light exposure.",
+  "Wipe dust off large leaves with a damp cloth so the plant can photosynthesize efficiently.",
+  "Most houseplants prefer to be slightly root-bound; only repot if roots are circling the pot.",
+  "Use room-temperature water to avoid shocking the roots of sensitive tropical species.",
+  "Group humidity-loving plants together to create a micro-climate with naturally higher moisture.",
+  "Add eggshells to your soil for a natural calcium boost that helps build stronger cell walls.",
+  "Yellow leaves often mean overwatering, while brown crispy edges usually mean the air is too dry.",
+  "Use cinnamon as a natural, mild anti-fungal treatment for seedlings or fresh cuttings.",
+  "If you see gnats, let the top inch of soil dry out completely between waterings to break their cycle."
+];
+
+const TASK_ICONS: Record<string, string> = {
+  'Watering': 'fa-droplet',
+  'Pruning': 'fa-scissors',
+  'Rotating': 'fa-arrows-rotate',
+  'Fertilizing': 'fa-flask',
+  'Mist/Clean': 'fa-sparkles',
+  'Repotting': 'fa-vial-circle-check',
+  'Other': 'fa-bell'
+};
+
+// --- Reusable Botanical View Component ---
+
+const BotanicalResultView = ({ 
+  data, 
+  imageUrl, 
+  sources, 
+  user,
+  onReset,
+  isJournal = false
+}: { 
+  data: PlantIdentification, 
+  imageUrl: string | null, 
+  sources: GroundingSource[], 
+  user: User,
+  onReset?: () => void,
+  isJournal?: boolean
+}) => {
+  return (
+    <div className="space-y-10 animate-in slide-in-from-bottom duration-700 pb-16">
+      <div className="bg-white rounded-[4.5rem] overflow-hidden shadow-2xl border border-stone-100">
+        {imageUrl && (
+          <div className="relative h-[32rem] overflow-hidden group">
+            <img src={imageUrl} alt={data.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-[5s] ease-in-out" />
+            <div className="absolute inset-0 bg-gradient-to-t from-plantin-deep via-plantin-deep/20 to-transparent"></div>
+            <div className="absolute bottom-12 left-12 right-12 text-white">
+              <div className="flex items-center gap-3 mb-6">
+                <span className="px-5 py-2 bg-plantin-leaf/40 backdrop-blur-2xl rounded-full text-[10px] font-black uppercase tracking-[0.3em] border border-white/20 shadow-2xl">
+                  {isJournal ? 'Saved Entry' : 'Verified Identity'}
+                </span>
+              </div>
+              <h2 className="text-7xl font-serif font-bold tracking-tight mb-3 leading-none">{data.name}</h2>
+              <p className="text-plantin-sage font-serif italic text-3xl opacity-90">{data.scientificName}</p>
+            </div>
+          </div>
+        )}
+        <div className="p-12">
+          {data.isToxic && (
+            <div className="bg-red-50 text-red-700 p-8 rounded-[3rem] flex items-start gap-6 mb-12 border border-red-100 shadow-sm relative overflow-hidden group">
+              <div className="absolute top-0 right-0 p-6 opacity-5 group-hover:rotate-12 transition-transform">
+                <i className="fas fa-skull-crossbones text-8xl"></i>
+              </div>
+              <div className="w-14 h-14 bg-red-100 rounded-2xl flex items-center justify-center text-red-600 shrink-0 relative z-10">
+                <i className="fas fa-biohazard text-2xl"></i>
+              </div>
+              <div className="relative z-10">
+                <p className="text-[11px] font-black uppercase tracking-[0.3em] mb-2">Botanical Hazard</p>
+                <p className="text-base font-medium leading-relaxed">{data.toxicityDetails || "Caution: This species contains specialized toxins. Keep away from pets and children."}</p>
+              </div>
+            </div>
+          )}
+          
+          <div className="space-y-4 mb-12 border-l-4 border-plantin-leaf pl-8">
+            <h3 className="text-[11px] font-black text-plantin-leaf/40 uppercase tracking-[0.4em]">Botanical Journal</h3>
+            <p className="text-plantin-deep font-medium leading-[1.8] text-2xl italic font-serif">"{data.description}"</p>
+          </div>
+          
+          <div className="space-y-10 mb-16">
+            <h3 className="font-serif font-bold text-3xl text-plantin-deep flex items-center gap-4">
+              <div className="w-10 h-10 rounded-xl bg-plantin-soft flex items-center justify-center">
+                <i className="fas fa-scroll text-sm opacity-40"></i>
+              </div>
+              Species Chronicle
+            </h3>
+            <div className="grid gap-6">
+              {data.facts.map((fact, i) => (
+                <div key={i} className="flex gap-6 p-8 bg-plantin-soft/50 rounded-[2.5rem] text-plantin-deep text-base font-medium leading-relaxed hover:bg-white hover:shadow-xl transition-all border border-transparent hover:border-plantin-sage/20">
+                  <span className="w-10 h-10 rounded-2xl bg-plantin-leaf flex items-center justify-center shrink-0 text-xs font-black text-white shadow-xl">{i+1}</span>
+                  <p className="pt-1 italic leading-relaxed">{fact}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-10 mb-10 pt-12 border-t border-stone-100">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-serif font-bold text-4xl text-plantin-deep">Garden Protocol</h3>
+              {!user.isPro && <span className="text-[10px] bg-plantin-gold text-white px-5 py-2 rounded-full font-black uppercase tracking-[0.3em] shadow-2xl shadow-plantin-gold/20">Upgrade Protocol</span>}
+            </div>
+
+            {user.isPro ? (
+              <div className="grid grid-cols-2 gap-6 animate-in fade-in duration-1000">
+                {[
+                  { icon: 'fa-droplet', label: 'Hydration', value: data.careGuide.watering, color: 'text-blue-500 bg-blue-50' },
+                  { icon: 'fa-sun', label: 'Luminosity', value: data.careGuide.sunlight, color: 'text-amber-500 bg-amber-50' },
+                  { icon: 'fa-flask-vial', label: 'Substrate', value: data.careGuide.soil, color: 'text-plantin-leaf bg-plantin-soft' },
+                  { icon: 'fa-temperature-arrow-up', label: 'Thermal', value: data.careGuide.temperature, color: 'text-red-400 bg-red-50' },
+                ].map((item, i) => (
+                  <div key={i} className="p-8 rounded-[3rem] border border-stone-50 bg-white shadow-sm hover:shadow-2xl transition-all group">
+                    <div className={`w-14 h-14 rounded-[1.5rem] ${item.color} flex items-center justify-center text-xl mb-6 shadow-inner group-hover:scale-110 transition-transform`}>
+                      <i className={`fas ${item.icon}`}></i>
+                    </div>
+                    <p className="text-[10px] font-black uppercase text-stone-300 mb-2 tracking-[0.3em]">{item.label}</p>
+                    <p className="text-sm font-bold text-plantin-deep leading-relaxed">{item.value}</p>
+                  </div>
+                ))}
+                <div className="col-span-2 mt-8 p-10 bg-plantin-deep rounded-[4rem] border border-white/5 shadow-2xl relative overflow-hidden group">
+                  <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-1000"></div>
+                  <div className="flex flex-col items-center gap-6 relative z-10">
+                    <div className="w-16 h-16 bg-white/10 backdrop-blur-xl border border-white/20 rounded-full flex items-center justify-center text-plantin-sage shadow-2xl">
+                      <i className="fas fa-wand-magic-sparkles text-2xl"></i>
+                    </div>
+                    <h4 className="text-[11px] font-black uppercase text-plantin-sage/60 tracking-[0.4em]">Ancient Remedies & Care Hacks</h4>
+                    <div className="grid gap-5 w-full">
+                      {data.careGuide.homeRemedies.map((tip, i) => (
+                        <div key={i} className="text-base text-white/80 font-medium flex gap-6 bg-white/5 p-6 rounded-[2rem] border border-white/10 hover:bg-white/10 transition-colors">
+                          <i className="fas fa-sparkles text-plantin-gold mt-1 text-sm"></i>
+                          <p className="italic">{tip}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="relative overflow-hidden rounded-[4rem] bg-plantin-bone p-16 border-2 border-dashed border-plantin-sage group">
+                <div className="flex flex-col items-center justify-center text-center relative z-10">
+                  <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center text-plantin-gold mb-8 shadow-[0_0_60px_rgba(212,175,55,0.3)] group-hover:scale-110 transition-transform">
+                    <i className="fas fa-crown text-3xl"></i>
+                  </div>
+                  <p className="text-3xl font-serif font-bold text-plantin-deep mb-4">Elite Care Database</p>
+                  <p className="text-base text-stone-400 mb-10 font-medium leading-relaxed italic max-w-sm">Elevate your gardening mastery with professional-grade schedules, precision lighting data, and legendary home remedies.</p>
+                  <Link to="/profile" className="bg-plantin-deep text-white px-12 py-5 rounded-[2rem] text-[11px] font-black uppercase tracking-[0.3em] shadow-2xl shadow-plantin-deep/40 hover:bg-plantin-leaf transition-all">Unlock Premium Suite</Link>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {!isJournal && sources.length > 0 && (
+            <div className="space-y-6 pt-12 border-t border-stone-100">
+              <h3 className="text-[10px] font-black text-stone-300 uppercase tracking-[0.4em] text-center">Verified Botanical Sources</h3>
+              <div className="flex flex-wrap justify-center gap-4">
+                {sources.map((source, i) => (
+                  <a 
+                    key={i} 
+                    href={source.uri} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[10px] bg-plantin-soft text-plantin-leaf px-6 py-3 rounded-full border border-plantin-sage/20 hover:bg-white transition-all flex items-center gap-3 font-black uppercase tracking-widest shadow-sm hover:shadow-xl"
+                  >
+                    <i className="fas fa-link text-[8px] opacity-40"></i> {source.title}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {onReset && (
+        <button onClick={onReset} className="w-full bg-plantin-deep text-white py-8 rounded-[3rem] font-black shadow-2xl hover:bg-plantin-leaf transition-all uppercase tracking-[0.3em] text-[11px] active:scale-95 flex items-center justify-center gap-3">
+           <i className="fas fa-camera"></i> {isJournal ? 'Back to Collection' : 'Scan Another Specimen'}
+        </button>
+      )}
+    </div>
+  );
+};
+
+// --- Reminders Feature Component ---
+
+const RemindersScreen = ({ user }: { user: User }) => {
+  const [reminders, setReminders] = useState<PlantReminder[]>([]);
+  const [isAdding, setIsAdding] = useState(false);
+  const [plants, setPlants] = useState<JournalEntry[]>([]);
+
+  // Form State
+  const [selectedPlantId, setSelectedPlantId] = useState('');
+  const [task, setTask] = useState('Watering');
+  const [customTask, setCustomTask] = useState('');
+  const [frequency, setFrequency] = useState(7);
+
+  useEffect(() => {
+    const savedReminders = JSON.parse(localStorage.getItem('plant_reminders') || '[]');
+    setReminders(savedReminders);
+    const savedJournal = JSON.parse(localStorage.getItem('plant_journal') || '[]');
+    setPlants(savedJournal);
+  }, []);
+
+  const saveReminders = (updated: PlantReminder[]) => {
+    localStorage.setItem('plant_reminders', JSON.stringify(updated));
+    setReminders(updated);
+  };
+
+  const handleAddReminder = () => {
+    const plant = plants.find(p => p.id === selectedPlantId);
+    if (!plant && !customTask) return;
+
+    const finalTask = task === 'Other' ? customTask : task;
+    const nextDue = new Date();
+    nextDue.setDate(nextDue.getDate() + Number(frequency));
+
+    const newReminder: PlantReminder = {
+      id: crypto.randomUUID(),
+      plantId: selectedPlantId || 'custom',
+      plantName: plant ? plant.plant.name : 'Unknown Plant',
+      task: finalTask,
+      frequencyDays: Number(frequency),
+      lastCompleted: new Date().toISOString(),
+      nextDue: nextDue.toISOString()
+    };
+
+    saveReminders([newReminder, ...reminders]);
+    setIsAdding(false);
+    setSelectedPlantId('');
+    setCustomTask('');
+  };
+
+  const handleComplete = (id: string) => {
+    const updated = reminders.map(r => {
+      if (r.id === id) {
+        const nextDue = new Date();
+        nextDue.setDate(nextDue.getDate() + r.frequencyDays);
+        return {
+          ...r,
+          lastCompleted: new Date().toISOString(),
+          nextDue: nextDue.toISOString()
+        };
+      }
+      return r;
+    });
+    saveReminders(updated);
+  };
+
+  const handleDelete = (id: string) => {
+    const updated = reminders.filter(r => r.id !== id);
+    saveReminders(updated);
+  };
+
+  const getDayStatus = (dateStr: string) => {
+    const diff = new Date(dateStr).getTime() - new Date().getTime();
+    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    if (days < 0) return { label: 'Overdue', color: 'text-red-500' };
+    if (days === 0) return { label: 'Due Today', color: 'text-amber-500' };
+    return { label: `In ${days} day${days > 1 ? 's' : ''}`, color: 'text-plantin-leaf' };
+  };
+
+  if (!user.isPro) {
+    return <ProRequiredOverlay title="Care Schedule" description="Unlock customizable reminders for watering, pruning, and professional botanical care protocols." />;
+  }
+
+  return (
+    <div className="space-y-8 animate-in slide-in-from-bottom duration-700 pb-12">
+      <div className="flex justify-between items-end">
+        <div>
+          <h2 className="text-4xl font-serif font-bold text-plantin-deep">Care Plans</h2>
+          <p className="text-plantin-leaf font-medium text-sm italic">Keep your garden thriving</p>
+        </div>
+        <button 
+          onClick={() => setIsAdding(true)}
+          className="w-14 h-14 rounded-2xl bg-plantin-leaf text-white flex items-center justify-center shadow-lg shadow-plantin-leaf/20 hover:scale-105 active:scale-95 transition-all"
+        >
+          <i className="fas fa-plus text-xl"></i>
+        </button>
+      </div>
+
+      {isAdding && (
+        <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-plantin-sage/20 animate-in zoom-in duration-300">
+          <h3 className="text-2xl font-serif font-bold text-plantin-deep mb-6">New Reminder</h3>
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-plantin-leaf/50 tracking-widest ml-2">Which Plant?</label>
+              <select 
+                value={selectedPlantId}
+                onChange={(e) => setSelectedPlantId(e.target.value)}
+                className="w-full bg-plantin-soft border-none rounded-2xl px-5 py-4 focus:ring-2 focus:ring-plantin-leaf outline-none font-medium"
+              >
+                <option value="">Select from your garden</option>
+                {plants.map(p => (
+                  <option key={p.id} value={p.id}>{p.plant.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-plantin-leaf/50 tracking-widest ml-2">Task Type</label>
+              <div className="grid grid-cols-2 gap-3">
+                {['Watering', 'Pruning', 'Rotating', 'Fertilizing', 'Mist/Clean', 'Other'].map(t => (
+                  <button 
+                    key={t}
+                    onClick={() => setTask(t)}
+                    className={`py-3 px-4 rounded-xl border text-xs font-bold transition-all ${task === t ? 'bg-plantin-leaf text-white border-plantin-leaf' : 'bg-white text-stone-400 border-stone-100 hover:border-plantin-leaf'}`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {task === 'Other' && (
+              <input 
+                type="text"
+                placeholder="Custom Task (e.g. Wipe leaves)"
+                value={customTask}
+                onChange={(e) => setCustomTask(e.target.value)}
+                className="w-full bg-plantin-soft border-none rounded-2xl px-5 py-4 focus:ring-2 focus:ring-plantin-leaf outline-none"
+              />
+            )}
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-plantin-leaf/50 tracking-widest ml-2">Frequency (Every X Days)</label>
+              <input 
+                type="number"
+                min="1"
+                value={frequency}
+                onChange={(e) => setFrequency(Number(e.target.value))}
+                className="w-full bg-plantin-soft border-none rounded-2xl px-5 py-4 focus:ring-2 focus:ring-plantin-leaf outline-none"
+              />
+            </div>
+
+            <div className="flex gap-4 pt-4">
+              <button 
+                onClick={() => setIsAdding(false)}
+                className="flex-1 bg-stone-100 text-stone-400 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleAddReminder}
+                className="flex-1 bg-plantin-leaf text-white py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-plantin-leaf/20"
+              >
+                Save Protocol
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reminders.length === 0 ? (
+        <div className="text-center py-24 bg-white rounded-[4rem] border border-dashed border-plantin-sage/30">
+          <i className="fas fa-calendar-check text-5xl text-stone-100 mb-6 block"></i>
+          <p className="text-stone-400 font-medium font-serif italic">Your care schedule is clear.<br/>Add your first task above.</p>
+        </div>
+      ) : (
+        <div className="grid gap-6">
+          {reminders.map((r) => {
+            const status = getDayStatus(r.nextDue);
+            const icon = TASK_ICONS[r.task] || 'fa-bell';
+            return (
+              <div key={r.id} className="bg-white p-6 rounded-[3rem] shadow-sm border border-stone-100 flex items-center justify-between group hover:shadow-xl transition-all relative overflow-hidden">
+                <div className="flex gap-5 items-center">
+                  <div className={`w-14 h-14 rounded-2xl ${status.label === 'Overdue' ? 'bg-red-50 text-red-500' : 'bg-plantin-soft text-plantin-leaf'} flex items-center justify-center shadow-inner`}>
+                    <i className={`fas ${icon} text-xl`}></i>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-lg text-plantin-deep leading-tight">{r.task}</h3>
+                    <p className="text-xs text-stone-400 font-medium mb-1">{r.plantName}</p>
+                    <p className={`text-[10px] font-black uppercase tracking-widest ${status.color}`}>{status.label}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                   <button 
+                    onClick={() => handleComplete(r.id)}
+                    className="w-12 h-12 rounded-full bg-plantin-soft text-plantin-leaf hover:bg-plantin-leaf hover:text-white transition-all flex items-center justify-center shadow-sm"
+                    title="Mark as done"
+                  >
+                    <i className="fas fa-check"></i>
+                  </button>
+                  <button 
+                    onClick={() => handleDelete(r.id)}
+                    className="w-12 h-12 rounded-full bg-red-50 text-red-300 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center shadow-sm"
+                    title="Delete"
+                  >
+                    <i className="fas fa-trash-can"></i>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // --- Auth Components ---
@@ -50,7 +446,6 @@ const AuthScreen = ({ onLogin }: { onLogin: (u: User) => void }) => {
 
   return (
     <div className="min-h-screen bg-plantin-bone flex flex-col justify-center px-8 py-12 animate-in fade-in duration-700 relative overflow-hidden">
-      {/* Decorative leaf patterns */}
       <div className="absolute -top-20 -left-20 w-64 h-64 text-plantin-leaf/10 opacity-30 rotate-45 pointer-events-none">
         <i className="fas fa-leaf text-[15rem]"></i>
       </div>
@@ -182,7 +577,7 @@ const JournalScreen = ({ user }: { user: User }) => {
       ) : (
         <div className="grid gap-6">
           {journal.map((item) => (
-            <div key={item.id} className="bg-white p-5 rounded-[3rem] shadow-sm border border-stone-100 flex items-center gap-6 group hover:shadow-2xl transition-all hover:-translate-y-1 relative overflow-hidden">
+            <Link key={item.id} to={`/history/${item.id}`} className="bg-white p-5 rounded-[3rem] shadow-sm border border-stone-100 flex items-center gap-6 group hover:shadow-2xl transition-all hover:-translate-y-1 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-4 text-plantin-leaf/5">
                 <i className="fas fa-leaf text-6xl"></i>
               </div>
@@ -207,10 +602,41 @@ const JournalScreen = ({ user }: { user: User }) => {
                    <span className="px-2 py-0.5 bg-plantin-soft text-plantin-leaf rounded-full text-[8px] font-black uppercase tracking-tighter border border-plantin-sage/20">{item.plant.family}</span>
                 </div>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
+    </div>
+  );
+};
+
+const JournalEntryDetailScreen = ({ user }: { user: User }) => {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [entry, setEntry] = useState<JournalEntry | null>(null);
+
+  useEffect(() => {
+    const journal = JSON.parse(localStorage.getItem('plant_journal') || '[]');
+    const found = journal.find((j: JournalEntry) => j.id === id);
+    if (found) {
+      setEntry(found);
+    } else {
+      navigate('/history');
+    }
+  }, [id, navigate]);
+
+  if (!entry) return null;
+
+  return (
+    <div className="animate-in fade-in duration-700">
+      <BotanicalResultView 
+        data={entry.plant} 
+        imageUrl={entry.imageUrl} 
+        sources={[]} 
+        user={user} 
+        isJournal={true}
+        onReset={() => navigate('/history')}
+      />
     </div>
   );
 };
@@ -313,6 +739,9 @@ const HomeScreen = ({ user, coords }: { user: User, coords: GeolocationCoordinat
   const [localFlora, setLocalFlora] = useState<{ text: string, sources: GroundingSource[] } | null>(null);
   const [loadingFlora, setLoadingFlora] = useState(false);
 
+  // Pick stable random tips for this mount session
+  const botanicalTip = useMemo(() => PLANT_TIPS[Math.floor(Math.random() * PLANT_TIPS.length)], []);
+
   const discoverFlora = async () => {
     if (!coords) return;
     setLoadingFlora(true);
@@ -408,7 +837,7 @@ const HomeScreen = ({ user, coords }: { user: User, coords: GeolocationCoordinat
           {[
             { icon: 'fa-user-md', label: 'Doctor', color: 'bg-white text-plantin-leaf', path: '/diagnose', pro: true, desc: 'Heal infections' },
             { icon: 'fa-seedling', label: 'My Garden', color: 'bg-white text-plantin-leaf', path: '/history', desc: 'Saved collection' },
-            { icon: 'fa-book-atlas', label: 'Atlas', color: 'bg-white text-plantin-leaf', path: '/identify', desc: 'Global database' },
+            { icon: 'fa-calendar-check', label: 'Care Schedule', color: 'bg-white text-plantin-leaf', path: '/reminders', pro: true, desc: 'Water & prune' },
             { icon: 'fa-store-alt', label: 'Nurseries', color: 'bg-white text-plantin-leaf', path: '/shops', pro: true, desc: 'Local supplies' },
           ].map((feat, i) => (
             <Link 
@@ -439,11 +868,11 @@ const HomeScreen = ({ user, coords }: { user: User, coords: GeolocationCoordinat
           <i className="fas fa-spa text-3xl"></i>
         </div>
         <div className="relative z-10">
-          <p className="text-[11px] font-black text-plantin-sage/40 uppercase tracking-[0.4em] mb-4">Garden Wisdom</p>
-          <p className="text-2xl font-serif font-medium text-white leading-relaxed italic">"A garden is a grand teacher. It teaches patience and careful watchfulness; it teaches industry and thrift; above all it teaches entire trust."</p>
+          <p className="text-[11px] font-black text-plantin-sage/40 uppercase tracking-[0.4em] mb-4">Cultivation Strategy</p>
+          <p className="text-2xl font-serif font-medium text-white leading-relaxed italic">"{botanicalTip}"</p>
           <div className="flex items-center justify-center gap-4 mt-8">
             <div className="h-px w-8 bg-white/20"></div>
-            <p className="text-[10px] font-black text-plantin-sage uppercase tracking-[0.3em]">Gertrude Jekyll</p>
+            <p className="text-[10px] font-black text-plantin-sage uppercase tracking-[0.3em]">Master Gardener Tip</p>
             <div className="h-px w-8 bg-white/20"></div>
           </div>
         </div>
@@ -462,10 +891,8 @@ const IdentifyScreen = ({ user, coords }: { user: User, coords: GeolocationCoord
       const res = await identifyPlant(base64, coords?.latitude, coords?.longitude);
       const referenceImage = await generatePlantImage(res.data.name);
       
-      // Compress image before saving to digital garden to avoid QuotaExceededError
       const finalImage = referenceImage ? await compressBase64(referenceImage) : null;
       
-      // Auto-save to My Garden (Digital Collection)
       const newEntry: JournalEntry = {
         id: crypto.randomUUID(),
         timestamp: new Date().toISOString(),
@@ -474,7 +901,6 @@ const IdentifyScreen = ({ user, coords }: { user: User, coords: GeolocationCoord
       };
       
       const journal = JSON.parse(localStorage.getItem('plant_journal') || '[]');
-      // Limit collection to 20 entries to manage localStorage quota efficiently
       const updatedJournal = [newEntry, ...journal].slice(0, 20);
       try {
         localStorage.setItem('plant_journal', JSON.stringify(updatedJournal));
@@ -530,138 +956,13 @@ const IdentifyScreen = ({ user, coords }: { user: User, coords: GeolocationCoord
           </div>
         </div>
       ) : (
-        <div className="space-y-10 animate-in slide-in-from-bottom duration-700 pb-16">
-          <div className="bg-white rounded-[4.5rem] overflow-hidden shadow-2xl border border-stone-100">
-            {result.referenceImage && (
-              <div className="relative h-[32rem] overflow-hidden group">
-                <img src={result.referenceImage} alt={result.data.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-[5s] ease-in-out" />
-                <div className="absolute inset-0 bg-gradient-to-t from-plantin-deep via-plantin-deep/20 to-transparent"></div>
-                <div className="absolute bottom-12 left-12 right-12 text-white">
-                  <div className="flex items-center gap-3 mb-6">
-                    <span className="px-5 py-2 bg-plantin-leaf/40 backdrop-blur-2xl rounded-full text-[10px] font-black uppercase tracking-[0.3em] border border-white/20 shadow-2xl">Verified Identity</span>
-                  </div>
-                  <h2 className="text-7xl font-serif font-bold tracking-tight mb-3 leading-none">{result.data.name}</h2>
-                  <p className="text-plantin-sage font-serif italic text-3xl opacity-90">{result.data.scientificName}</p>
-                </div>
-              </div>
-            )}
-            <div className="p-12">
-              {result.data.isToxic && (
-                <div className="bg-red-50 text-red-700 p-8 rounded-[3rem] flex items-start gap-6 mb-12 border border-red-100 shadow-sm relative overflow-hidden group">
-                  <div className="absolute top-0 right-0 p-6 opacity-5 group-hover:rotate-12 transition-transform">
-                    <i className="fas fa-skull-crossbones text-8xl"></i>
-                  </div>
-                  <div className="w-14 h-14 bg-red-100 rounded-2xl flex items-center justify-center text-red-600 shrink-0 relative z-10">
-                    <i className="fas fa-biohazard text-2xl"></i>
-                  </div>
-                  <div className="relative z-10">
-                    <p className="text-[11px] font-black uppercase tracking-[0.3em] mb-2">Botanical Hazard</p>
-                    <p className="text-base font-medium leading-relaxed">{result.data.toxicityDetails || "Caution: This species contains specialized toxins. Keep away from pets and children."}</p>
-                  </div>
-                </div>
-              )}
-              
-              <div className="space-y-4 mb-12 border-l-4 border-plantin-leaf pl-8">
-                <h3 className="text-[11px] font-black text-plantin-leaf/40 uppercase tracking-[0.4em]">Botanical Journal</h3>
-                <p className="text-plantin-deep font-medium leading-[1.8] text-2xl italic font-serif">"{result.data.description}"</p>
-              </div>
-              
-              <div className="space-y-10 mb-16">
-                <h3 className="font-serif font-bold text-3xl text-plantin-deep flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl bg-plantin-soft flex items-center justify-center">
-                    <i className="fas fa-scroll text-sm opacity-40"></i>
-                  </div>
-                  Species Chronicle
-                </h3>
-                <div className="grid gap-6">
-                  {result.data.facts.map((fact, i) => (
-                    <div key={i} className="flex gap-6 p-8 bg-plantin-soft/50 rounded-[2.5rem] text-plantin-deep text-base font-medium leading-relaxed hover:bg-white hover:shadow-xl transition-all border border-transparent hover:border-plantin-sage/20">
-                      <span className="w-10 h-10 rounded-2xl bg-plantin-leaf flex items-center justify-center shrink-0 text-xs font-black text-white shadow-xl">{i+1}</span>
-                      <p className="pt-1 italic leading-relaxed">{fact}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Enhanced Care Plan Section */}
-              <div className="space-y-10 mb-10 pt-12 border-t border-stone-100">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-serif font-bold text-4xl text-plantin-deep">Garden Protocol</h3>
-                  {!user.isPro && <span className="text-[10px] bg-plantin-gold text-white px-5 py-2 rounded-full font-black uppercase tracking-[0.3em] shadow-2xl shadow-plantin-gold/20">Upgrade Protocol</span>}
-                </div>
-
-                {user.isPro ? (
-                  <div className="grid grid-cols-2 gap-6 animate-in fade-in duration-1000">
-                    {[
-                      { icon: 'fa-droplet', label: 'Hydration', value: result.data.careGuide.watering, color: 'text-blue-500 bg-blue-50' },
-                      { icon: 'fa-sun', label: 'Luminosity', value: result.data.careGuide.sunlight, color: 'text-amber-500 bg-amber-50' },
-                      { icon: 'fa-flask-vial', label: 'Substrate', value: result.data.careGuide.soil, color: 'text-plantin-leaf bg-plantin-soft' },
-                      { icon: 'fa-temperature-arrow-up', label: 'Thermal', value: result.data.careGuide.temperature, color: 'text-red-400 bg-red-50' },
-                    ].map((item, i) => (
-                      <div key={i} className="p-8 rounded-[3rem] border border-stone-50 bg-white shadow-sm hover:shadow-2xl transition-all group">
-                        <div className={`w-14 h-14 rounded-[1.5rem] ${item.color} flex items-center justify-center text-xl mb-6 shadow-inner group-hover:scale-110 transition-transform`}>
-                          <i className={`fas ${item.icon}`}></i>
-                        </div>
-                        <p className="text-[10px] font-black uppercase text-stone-300 mb-2 tracking-[0.3em]">{item.label}</p>
-                        <p className="text-sm font-bold text-plantin-deep leading-relaxed">{item.value}</p>
-                      </div>
-                    ))}
-                    <div className="col-span-2 mt-8 p-10 bg-plantin-deep rounded-[4rem] border border-white/5 shadow-2xl relative overflow-hidden group">
-                      <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-1000"></div>
-                      <div className="flex flex-col items-center gap-6 relative z-10">
-                        <div className="w-16 h-16 bg-white/10 backdrop-blur-xl border border-white/20 rounded-full flex items-center justify-center text-plantin-sage shadow-2xl">
-                          <i className="fas fa-wand-magic-sparkles text-2xl"></i>
-                        </div>
-                        <h4 className="text-[11px] font-black uppercase text-plantin-sage/60 tracking-[0.4em]">Ancient Remedies & Care Hacks</h4>
-                        <div className="grid gap-5 w-full">
-                          {result.data.careGuide.homeRemedies.map((tip, i) => (
-                            <div key={i} className="text-base text-white/80 font-medium flex gap-6 bg-white/5 p-6 rounded-[2rem] border border-white/10 hover:bg-white/10 transition-colors">
-                              <i className="fas fa-sparkles text-plantin-gold mt-1 text-sm"></i>
-                              <p className="italic">{tip}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="relative overflow-hidden rounded-[4rem] bg-plantin-bone p-16 border-2 border-dashed border-plantin-sage group">
-                    <div className="flex flex-col items-center justify-center text-center relative z-10">
-                      <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center text-plantin-gold mb-8 shadow-[0_0_60px_rgba(212,175,55,0.3)] group-hover:scale-110 transition-transform">
-                        <i className="fas fa-crown text-3xl"></i>
-                      </div>
-                      <p className="text-3xl font-serif font-bold text-plantin-deep mb-4">Elite Care Database</p>
-                      <p className="text-base text-stone-400 mb-10 font-medium leading-relaxed italic max-w-sm">Elevate your gardening mastery with professional-grade schedules, precision lighting data, and legendary home remedies.</p>
-                      <Link to="/profile" className="bg-plantin-deep text-white px-12 py-5 rounded-[2rem] text-[11px] font-black uppercase tracking-[0.3em] shadow-2xl shadow-plantin-deep/40 hover:bg-plantin-leaf transition-all">Unlock Premium Suite</Link>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {result.sources.length > 0 && (
-                <div className="space-y-6 pt-12 border-t border-stone-100">
-                  <h3 className="text-[10px] font-black text-stone-300 uppercase tracking-[0.4em] text-center">Verified Botanical Sources</h3>
-                  <div className="flex flex-wrap justify-center gap-4">
-                    {result.sources.map((source, i) => (
-                      <a 
-                        key={i} 
-                        href={source.uri} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-[10px] bg-plantin-soft text-plantin-leaf px-6 py-3 rounded-full border border-plantin-sage/20 hover:bg-white transition-all flex items-center gap-3 font-black uppercase tracking-widest shadow-sm hover:shadow-xl"
-                      >
-                        <i className="fas fa-link text-[8px] opacity-40"></i> {source.title}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          <button onClick={() => setResult(null)} className="w-full bg-plantin-deep text-white py-8 rounded-[3rem] font-black shadow-2xl hover:bg-plantin-leaf transition-all uppercase tracking-[0.3em] text-[11px] active:scale-95 flex items-center justify-center gap-3">
-             <i className="fas fa-camera"></i> Scan Another Specimen
-          </button>
-        </div>
+        <BotanicalResultView 
+          data={result.data} 
+          imageUrl={result.referenceImage || null} 
+          sources={result.sources} 
+          user={user} 
+          onReset={() => setResult(null)} 
+        />
       )}
     </div>
   );
@@ -676,7 +977,6 @@ const DiagnoseScreen = ({ user, coords }: { user: User, coords: GeolocationCoord
     try {
       const res = await diagnosePlant(base64, coords?.latitude, coords?.longitude);
       setResult(res);
-      // History of diagnoses
       const history = JSON.parse(localStorage.getItem('plant_history') || '[]');
       localStorage.setItem('plant_history', JSON.stringify([res.data, ...history].slice(0, 20)));
     } catch (error) {
@@ -742,7 +1042,7 @@ const DiagnoseScreen = ({ user, coords }: { user: User, coords: GeolocationCoord
               <h4 className="text-[11px] font-black uppercase text-plantin-leaf mb-8 tracking-[0.4em] text-center underline underline-offset-[12px] decoration-plantin-leaf/30">Clinical Treatment Plan</h4>
               <ul className="grid gap-6">
                 {result.data.recommendations.map((r, i) => (
-                  <li key={i} className="text-base font-medium text-plantin-deep flex gap-6 bg-white/95 p-7 rounded-[2.2rem] shadow-sm border border-transparent hover:border-plantin-sage/20 transition-all group/item">
+                  <li key={i} className="text-sm font-medium text-plantin-deep flex gap-6 bg-white/95 p-7 rounded-[2.2rem] shadow-sm border border-transparent hover:border-plantin-sage/20 transition-all group/item">
                     <div className="w-8 h-8 rounded-2xl bg-plantin-leaf text-white flex items-center justify-center shrink-0 text-xs mt-0.5 shadow-lg shadow-plantin-leaf/20 group-hover/item:rotate-12 transition-transform">
                       <i className="fas fa-hand-holding-medical"></i>
                     </div>
@@ -883,15 +1183,16 @@ const ProfileScreen = ({ user, onLogout, onUpgrade }: { user: User, onLogout: ()
 
 const Nav = ({ user }: { user: User }) => {
   const location = useLocation();
-  const isActive = (path: string) => location.pathname === path;
+  const isActive = (path: string) => location.pathname === path || (path === '/history' && location.pathname.startsWith('/history/'));
 
   return (
-    <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-[90%] max-w-sm glass rounded-[4rem] px-12 py-7 flex justify-between items-center z-50 shadow-[0_30px_60px_-15px_rgba(30,58,52,0.3)] border border-white/60">
-      <Link to="/" className={`flex flex-col items-center transition-all duration-300 ${isActive('/') ? 'text-plantin-leaf scale-150 drop-shadow-[0_0_8px_rgba(45,106,79,0.3)]' : 'text-stone-300 hover:text-plantin-leaf/60'}`}>
+    <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-[90%] max-sm glass rounded-[4rem] px-12 py-7 flex justify-between items-center z-50 shadow-[0_30px_60px_-15px_rgba(30,58,52,0.3)] border border-white/60">
+      <Link to="/" className={`flex flex-col items-center transition-all duration-300 ${isActive('/') && !location.pathname.startsWith('/history') && !location.pathname.startsWith('/reminders') ? 'text-plantin-leaf scale-150 drop-shadow-[0_0_8px_rgba(45,106,79,0.3)]' : 'text-stone-300 hover:text-plantin-leaf/60'}`}>
         <i className="fas fa-seedling text-2xl"></i>
       </Link>
-      <Link to="/identify" className={`flex flex-col items-center transition-all duration-300 ${isActive('/identify') ? 'text-plantin-leaf scale-150 drop-shadow-[0_0_8px_rgba(45,106,79,0.3)]' : 'text-stone-300 hover:text-plantin-leaf/60'}`}>
-        <i className="fas fa-camera-retro text-2xl"></i>
+      <Link to="/reminders" className={`relative flex flex-col items-center transition-all duration-300 ${isActive('/reminders') ? 'text-plantin-leaf scale-150 drop-shadow-[0_0_8px_rgba(45,106,79,0.3)]' : 'text-stone-300 hover:text-plantin-leaf/60'}`}>
+        <i className="fas fa-calendar-check text-2xl"></i>
+        {!user.isPro && <div className="absolute -top-1 -right-1 w-4 h-4 bg-plantin-gold rounded-full border-2 border-white flex items-center justify-center text-[6px] shadow-md text-white"><i className="fas fa-crown"></i></div>}
       </Link>
       <div className="relative">
         <Link to="/diagnose" className="w-20 h-20 bg-plantin-leaf rounded-full flex items-center justify-center text-white shadow-2xl shadow-plantin-leaf/40 -mt-24 border-[6px] border-plantin-bone active:scale-90 transition-transform hover:brightness-110">
@@ -909,9 +1210,27 @@ const Nav = ({ user }: { user: User }) => {
   );
 };
 
+// --- Push-style Popup Manager ---
+
+const InAppNotification = ({ message, onClose }: { message: string, onClose: () => void }) => (
+  <div className="fixed top-10 left-1/2 -translate-x-1/2 w-[85%] max-w-sm bg-plantin-deep text-white p-6 rounded-[2.5rem] shadow-2xl z-[100] animate-in slide-in-from-top duration-500 flex items-center gap-5 border border-white/10">
+    <div className="w-12 h-12 rounded-full bg-plantin-leaf flex items-center justify-center shrink-0">
+      <i className="fas fa-bell animate-swing"></i>
+    </div>
+    <div className="flex-1">
+      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-plantin-sage mb-1">Care Reminder</p>
+      <p className="text-sm font-medium leading-snug">{message}</p>
+    </div>
+    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center opacity-40 hover:opacity-100">
+      <i className="fas fa-xmark"></i>
+    </button>
+  </div>
+);
+
 const App = () => {
   const [user, setUser] = useState<User | null>(authService.getSession());
   const [coords, setCoords] = useState<GeolocationCoordinates | null>(null);
+  const [activePopup, setActivePopup] = useState<string | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -929,6 +1248,24 @@ const App = () => {
         { enableHighAccuracy: true }
       );
     }
+  }, [user]);
+
+  // Care Scheduler Checker
+  useEffect(() => {
+    if (!user || !user.isPro) return;
+    
+    const checkSchedule = () => {
+      const reminders: PlantReminder[] = JSON.parse(localStorage.getItem('plant_reminders') || '[]');
+      const now = new Date();
+      const due = reminders.find(r => new Date(r.nextDue) <= now);
+      if (due) {
+        setActivePopup(`${due.plantName} needs ${due.task.toLowerCase()}!`);
+      }
+    };
+
+    const interval = setInterval(checkSchedule, 30000); // Check every 30 seconds
+    checkSchedule(); // Initial check
+    return () => clearInterval(interval);
   }, [user]);
 
   const handleLogin = (u: User) => {
@@ -955,6 +1292,8 @@ const App = () => {
 
   return (
     <div className="max-w-md mx-auto min-h-screen pb-48 pt-16 px-8 font-sans bg-plantin-bone selection:bg-plantin-sage selection:text-plantin-deep scroll-smooth">
+      {activePopup && <InAppNotification message={activePopup} onClose={() => setActivePopup(null)} />}
+      
       <header className="flex justify-between items-center mb-16 animate-in slide-in-from-top-10 duration-1000">
         <Link to="/" className="flex items-center gap-5 group">
           <div className="w-16 h-16 bg-plantin-leaf rounded-[2rem] flex items-center justify-center text-white shadow-2xl shadow-plantin-leaf/30 group-hover:rotate-12 transition-all border-4 border-white">
@@ -980,7 +1319,9 @@ const App = () => {
           <Route path="/" element={<HomeScreen user={user} coords={coords} />} />
           <Route path="/identify" element={<IdentifyScreen user={user} coords={coords} />} />
           <Route path="/diagnose" element={<DiagnoseScreen user={user} coords={coords} />} />
+          <Route path="/reminders" element={<RemindersScreen user={user} />} />
           <Route path="/history" element={<JournalScreen user={user} />} />
+          <Route path="/history/:id" element={<JournalEntryDetailScreen user={user} />} />
           <Route path="/shops" element={<ShopsScreen user={user} coords={coords} />} />
           <Route path="/profile" element={<ProfileScreen user={user} onLogout={handleLogout} onUpgrade={handleUpgrade} />} />
           <Route path="/auth" element={<AuthScreen onLogin={handleLogin} />} />
