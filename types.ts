@@ -27,6 +27,7 @@ export interface PlantIdentification {
   isToxic: boolean;
   toxicityDetails?: string;
   isWeed: boolean;
+  confidence?: number;
 }
 
 export interface CareGuide {

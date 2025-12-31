@@ -55,7 +55,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, label }) => {
           className="w-full py-16 border border-plantin-sage/40 rounded-[2.5rem] bg-white shadow-sm hover:shadow-md transition-all flex flex-col items-center justify-center gap-4 text-plantin-deep group"
         >
           <div className="w-20 h-20 rounded-full bg-plantin-soft flex items-center justify-center text-3xl group-hover:scale-110 transition-transform duration-300">
-            <i className="fas fa-camera-retro text-plantin-leaf animate-pulse"></i>
+            <i className="fas fa-camera-retro text-plantin-leaf animate-pulse text-4xl"></i>
           </div>
           <div className="text-center">
             <span className="font-serif font-semibold text-2xl block mb-1">{label}</span>
@@ -70,7 +70,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, label }) => {
               onClick={() => { setPreview(null); triggerInput(); }}
               className="w-full bg-white/95 backdrop-blur-md text-plantin-deep py-4 rounded-2xl shadow-xl text-sm font-bold uppercase tracking-widest hover:bg-white transition-all flex items-center justify-center gap-2"
             >
-              <i className="fas fa-redo"></i> Try Another Photo
+              <i className="fas fa-redo text-lg"></i> Try Another Photo
             </button>
           </div>
         </div>

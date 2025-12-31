@@ -57,6 +57,7 @@ export const identifyPlant = async (
     "isToxic": boolean,
     "toxicityDetails": "string",
     "isWeed": boolean,
+    "confidence": number,
     "careGuide": {
       "watering": "string",
       "sunlight": "string",
@@ -66,6 +67,7 @@ export const identifyPlant = async (
     }
   }
 
+  The "confidence" should be a number between 0.0 and 1.0 representing how certain you are of the identification.
   Use Google Search and Google Maps to ensure the facts and regional data are accurate.`;
 
   const response = await ai.models.generateContent({
@@ -86,7 +88,6 @@ export const identifyPlant = async (
           }
         }
       } : undefined,
-      // IMPORTANT: responseMimeType and responseSchema are NOT supported when using the googleMaps tool.
     }
   });
 
@@ -148,7 +149,6 @@ export const diagnosePlant = async (
           }
         }
       } : undefined,
-      // IMPORTANT: responseMimeType and responseSchema are NOT supported when using the googleMaps tool.
     }
   });
 
