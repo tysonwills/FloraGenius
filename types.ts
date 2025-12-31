@@ -7,6 +7,16 @@ export interface User {
   joinedDate: string;
 }
 
+export interface NotificationSettings {
+  Watering: boolean;
+  Pruning: boolean;
+  Rotating: boolean;
+  Fertilizing: boolean;
+  'Mist/Clean': boolean;
+  Repotting: boolean;
+  Other: boolean;
+}
+
 export interface PlantIdentification {
   name: string;
   scientificName: string;

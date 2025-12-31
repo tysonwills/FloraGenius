@@ -2,33 +2,74 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { PlantIdentification, PlantDiagnosis, GroundingSource } from "../types";
 
-// Helper to get location context string
-const getLocationContext = (lat?: number, lng?: number) => {
-  return lat && lng ? ` (The user is located at coordinates: ${lat}, ${lng}. Please consider local flora and regional conditions.)` : "";
+/**
+ * Utility to extract and parse JSON from the model's response.
+ * Handles cases where the model wraps JSON in markdown code blocks.
+ */
+const extractJson = (text: string) => {
+  // Find everything between the first '{' and the last '}'
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  
+  if (start !== -1 && end !== -1) {
+    const jsonStr = text.substring(start, end + 1);
+    try {
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.error("Failed to parse extracted JSON string", e);
+      throw new Error("Botanical data format error");
+    }
+  }
+  
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("Failed to parse raw response as JSON", e);
+    throw new Error("Could not interpret botanical analysis");
+  }
 };
 
-// Identify plant using Gemini 3 Pro for advanced botanical reasoning
+// Helper to get location context string
+const getLocationContext = (lat?: number, lng?: number) => {
+  return lat && lng ? ` (The user is located at coordinates: ${lat}, ${lng}. Use Maps grounding to verify if this plant is common, native, or likely to be found at this specific location or region.)` : "";
+};
+
+// Identify plant using Gemini 2.5 Flash for combined Search and Maps reasoning
 export const identifyPlant = async (
   base64Image: string, 
   lat?: number, 
-  lng?: number
+  lng?: number,
+  observations?: string
 ): Promise<{ data: PlantIdentification; sources: GroundingSource[] }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const prompt = `Identify this plant from the image.${getLocationContext(lat, lng)} Provide a detailed report including:
-  1. Common Name and Scientific Name.
-  2. Family.
-  3. A short description.
-  4. 3-5 interesting facts.
-  5. Comprehensive Care Guide (Watering, Sunlight, Soil, Temperature).
-  6. Home remedies for common issues for this specific plant.
-  7. Toxicity check (Is it toxic to pets/humans?).
-  8. Weed check (Is it considered an invasive weed?).
+  const observationSection = observations ? `The user also provided these observations/keywords: "${observations}". Use this info to refine the identification.` : "";
   
-  Return the information in JSON format. Use Google Search to ensure the facts are accurate and up-to-date.`;
+  const prompt = `Identify this plant from the image.${getLocationContext(lat, lng)} ${observationSection} Provide a detailed report.
+  
+  You MUST return the response strictly as a JSON object (no other text) with this structure:
+  {
+    "name": "string",
+    "scientificName": "string",
+    "family": "string",
+    "description": "string",
+    "facts": ["string"],
+    "isToxic": boolean,
+    "toxicityDetails": "string",
+    "isWeed": boolean,
+    "careGuide": {
+      "watering": "string",
+      "sunlight": "string",
+      "soil": "string",
+      "temperature": "string",
+      "homeRemedies": ["string"]
+    }
+  }
+
+  Use Google Search and Google Maps to ensure the facts and regional data are accurate.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-pro-preview",
+    model: "gemini-2.5-flash",
     contents: {
       parts: [
         { inlineData: { data: base64Image, mimeType: "image/jpeg" } },
@@ -36,84 +77,36 @@ export const identifyPlant = async (
       ]
     },
     config: {
-      tools: [{ googleSearch: {} }],
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          name: { type: Type.STRING },
-          scientificName: { type: Type.STRING },
-          family: { type: Type.STRING },
-          description: { type: Type.STRING },
-          facts: { type: Type.ARRAY, items: { type: Type.STRING } },
-          isToxic: { type: Type.BOOLEAN },
-          toxicityDetails: { type: Type.STRING },
-          isWeed: { type: Type.BOOLEAN },
-          careGuide: {
-            type: Type.OBJECT,
-            properties: {
-              watering: { type: Type.STRING },
-              sunlight: { type: Type.STRING },
-              soil: { type: Type.STRING },
-              temperature: { type: Type.STRING },
-              homeRemedies: { type: Type.ARRAY, items: { type: Type.STRING } }
-            },
-            required: ["watering", "sunlight", "soil", "temperature", "homeRemedies"]
+      tools: [{ googleSearch: {} }, { googleMaps: {} }],
+      toolConfig: lat && lng ? {
+        retrievalConfig: {
+          latLng: {
+            latitude: lat,
+            longitude: lng
           }
-        },
-        required: ["name", "scientificName", "family", "description", "facts", "careGuide", "isToxic", "isWeed"]
-      }
+        }
+      } : undefined,
+      // IMPORTANT: responseMimeType and responseSchema are NOT supported when using the googleMaps tool.
     }
   });
 
-  // Extract grounding chunks from Google Search metadata
-  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-    title: chunk.web?.title || "Reference",
-    uri: chunk.web?.uri || ""
-  })) || [];
+  // Extract grounding chunks from both Search and Maps
+  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => {
+    if (chunk.web) return { title: chunk.web.title || "Reference", uri: chunk.web.uri || "" };
+    if (chunk.maps) return { title: chunk.maps.title || "Location Context", uri: chunk.maps.uri || "" };
+    return null;
+  }).filter(Boolean) || [];
 
   const text = response.text || "{}";
   try {
-    return { data: JSON.parse(text), sources };
+    return { data: extractJson(text), sources };
   } catch (e) {
-    console.error("Failed to parse plant identification JSON", e);
+    console.error("Failed to process plant identification JSON", e);
     throw new Error("Invalid response from AI");
   }
 };
 
-// Generate botanical imagery using gemini-2.5-flash-image
-export const generatePlantImage = async (plantName: string): Promise<string | null> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const prompt = `A high-quality, professional botanical photograph of a healthy ${plantName} in a natural garden setting, soft natural lighting, high resolution.`;
-  
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: prompt }],
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "16:9"
-        }
-      },
-    });
-
-    // Manually iterate through response parts to find the inline image data
-    if (response.candidates?.[0]?.content?.parts) {
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData) {
-          return `data:image/png;base64,${part.inlineData.data}`;
-        }
-      }
-    }
-  } catch (error) {
-    console.error("Image generation failed", error);
-  }
-  return null;
-};
-
-// Diagnose plant diseases using Gemini 3 Pro
+// Diagnose plant diseases using Gemini 2.5 Flash
 export const diagnosePlant = async (
   base64Image: string,
   lat?: number,
@@ -122,17 +115,23 @@ export const diagnosePlant = async (
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const prompt = `Analyze the health of the plant in this image.${getLocationContext(lat, lng)}
-  1. Identify the plant species.
-  2. Identify the specific disease, pest, or deficiency affecting it.
-  3. List visual symptoms detected.
-  4. List likely causes.
-  5. Provide professional recommendations and actions to take to bring it back to optimum health.
-  6. Provide a prognosis.
+  Identify the species, disease/pest, symptoms, causes, recommendations, and prognosis.
   
-  Return the analysis in JSON format. Use Google Search to provide accurate, real-world diagnostic information.`;
+  You MUST return the response strictly as a JSON object (no other text) with this structure:
+  {
+    "plantName": "string",
+    "issue": "string",
+    "confidence": number,
+    "symptoms": ["string"],
+    "causes": ["string"],
+    "recommendations": ["string"],
+    "prognosis": "string"
+  }
+
+  Use Google Search and Google Maps for regional accuracy and treatment safety.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-pro-preview",
+    model: "gemini-2.5-flash",
     contents: {
       parts: [
         { inlineData: { data: base64Image, mimeType: "image/jpeg" } },
@@ -140,32 +139,28 @@ export const diagnosePlant = async (
       ]
     },
     config: {
-      tools: [{ googleSearch: {} }],
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          plantName: { type: Type.STRING },
-          issue: { type: Type.STRING },
-          confidence: { type: Type.NUMBER },
-          symptoms: { type: Type.ARRAY, items: { type: Type.STRING } },
-          causes: { type: Type.ARRAY, items: { type: Type.STRING } },
-          recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-          prognosis: { type: Type.STRING }
-        },
-        required: ["plantName", "issue", "confidence", "symptoms", "causes", "recommendations", "prognosis"]
-      }
+      tools: [{ googleSearch: {} }, { googleMaps: {} }],
+      toolConfig: lat && lng ? {
+        retrievalConfig: {
+          latLng: {
+            latitude: lat,
+            longitude: lng
+          }
+        }
+      } : undefined,
+      // IMPORTANT: responseMimeType and responseSchema are NOT supported when using the googleMaps tool.
     }
   });
 
-  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-    title: chunk.web?.title || "Reference",
-    uri: chunk.web?.uri || ""
-  })) || [];
+  const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => {
+    if (chunk.web) return { title: chunk.web.title || "Reference", uri: chunk.web.uri || "" };
+    if (chunk.maps) return { title: chunk.maps.title || "Regional Context", uri: chunk.maps.uri || "" };
+    return null;
+  }).filter(Boolean) || [];
 
   const text = response.text || "{}";
   try {
-    const result = JSON.parse(text);
+    const result = extractJson(text);
     return {
       data: {
         ...result,
@@ -175,12 +170,12 @@ export const diagnosePlant = async (
       sources
     };
   } catch (e) {
-    console.error("Failed to parse plant diagnosis JSON", e);
+    console.error("Failed to process plant diagnosis JSON", e);
     throw new Error("Invalid response from AI");
   }
 };
 
-// Maps grounding requires Gemini 2.5 series models
+// Maps grounding for garden centers
 export const getNearbyGardenCenters = async (lat: number, lng: number): Promise<{ text: string, centers: GroundingSource[] }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
@@ -200,7 +195,6 @@ export const getNearbyGardenCenters = async (lat: number, lng: number): Promise<
     }
   });
 
-  // Extract mandatory maps URLs and titles from grounding chunks
   const centers = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
     title: chunk.maps?.title || "Garden Center",
     uri: chunk.maps?.uri || ""
@@ -209,13 +203,13 @@ export const getNearbyGardenCenters = async (lat: number, lng: number): Promise<
   return { text: response.text || "", centers };
 };
 
-// Identify local flora using Google Maps grounding
+// Local flora identification
 export const getLocalFlora = async (lat: number, lng: number): Promise<{ text: string, sources: GroundingSource[] }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
-    contents: "Identify the most common or interesting plants, flowers, and trees that are native or typical for this specific geographical area. Provide names and a brief reason why they thrive here.",
+    contents: "Identify common plants, flowers, and trees that are native or typical for this specific geographical area.",
     config: {
       tools: [{ googleMaps: {} }],
       toolConfig: {
@@ -235,4 +229,27 @@ export const getLocalFlora = async (lat: number, lng: number): Promise<{ text: s
   })) || [];
 
   return { text: response.text || "", sources };
+};
+
+// Generate plant image (still flash image for speed/quality)
+export const generatePlantImage = async (plantName: string): Promise<string | null> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const prompt = `A professional botanical photograph of a healthy ${plantName} in a natural garden setting, high resolution.`;
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: { parts: [{ text: prompt }] },
+      config: { imageConfig: { aspectRatio: "16:9" } },
+    });
+
+    if (response.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    }
+  } catch (error) {
+    console.error("Image generation failed", error);
+  }
+  return null;
 };
