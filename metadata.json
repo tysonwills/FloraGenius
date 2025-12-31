@@ -1,0 +1,8 @@
+{
+  "name": "FloraGenius: AI Plant Expert",
+  "description": "A comprehensive AI-powered assistant for plant identification, disease diagnosis, and professional care guides. Features search grounding for accurate facts and maps grounding for finding nearby garden centers.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
